@@ -46,15 +46,10 @@ def crear_y_ejecutar_contenedor(cliente, nombre_imagen, comando, tiempo_inicio, 
         print(f"Iniciando contenedor para el comando '{comando}'...")
         contenedor = cliente.containers.run(nombre_imagen, detach=True, name=nombre_contenedor)
         print(f"El contenedor para el comando '{comando}' está en ejecución.")
-        try:
-            contenedor.wait(timeout=tiempo_estimado)
-            print(f"El contenedor para el comando '{comando}' ha terminado su ejecución.")
-        except docker.errors.ContainerError as e:
-            print(f"Error en la ejecución del contenedor: {e}")
-        except docker.errors.APIError as e:
-            print(f"Error en la API de Docker: {e}")
-        except docker.errors.DockerException as e:
-            print(f"Error desconocido en Docker: {e}")
+        # Esperar el tiempo estimado
+        time.sleep(tiempo_estimado)
+        contenedor.stop()
+        print(f"El contenedor para el comando '{comando}' ha sido ejecutado.")
     
     print(f"Esperando {tiempo_inicio} segundos para iniciar el contenedor para el comando '{comando}'...")
     time.sleep(tiempo_inicio)
