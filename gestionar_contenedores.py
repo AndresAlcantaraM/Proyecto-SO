@@ -55,7 +55,7 @@ def crear_y_ejecutar_contenedor(cliente, nombre_imagen, comando, tiempo_inicio, 
             print(f"Error en la API de Docker: {e}")
         except docker.errors.DockerException as e:
             print(f"Error desconocido en Docker: {e}")
-            
+    
     print(f"Esperando {tiempo_inicio} segundos para iniciar el contenedor para el comando '{comando}'...")
     time.sleep(tiempo_inicio)
     ejecutar_contenedor()
@@ -85,6 +85,12 @@ def listar_comandos():
         comandos_guardados = json.load(f)
     
     return comandos_guardados
+
+def borrar_comandos_guardados():
+    if os.path.exists(ARCHIVO_COMANDOS):
+        with open(ARCHIVO_COMANDOS, 'w') as f:
+            json.dump([], f)
+        print("Comandos guardados borrados.")
 
 def principal():
     cliente = docker.from_env()
@@ -122,6 +128,7 @@ def principal():
                 print("Selección inválida.")
         
         elif opcion == '3':
+            borrar_comandos_guardados()
             break
         else:
             print("Opción no válida, intente nuevamente.")
