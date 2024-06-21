@@ -8,12 +8,14 @@ import os
 # Archivo donde se guardarán los comandos
 ARCHIVO_COMANDOS = "comandos.json"
 
+
 def generar_dockerfile(comando):
     contenido_dockerfile = f"""
     FROM ubuntu:latest
     CMD {comando}
     """
     return contenido_dockerfile
+
 
 def construir_imagen(cliente, comando):
     hash_comando = hashlib.md5(comando.encode()).hexdigest()
@@ -29,6 +31,7 @@ def construir_imagen(cliente, comando):
         print(f"Imagen para el comando '{comando}' construida exitosamente.")
     
     return nombre_imagen
+
 
 def crear_y_ejecutar_contenedor(cliente, nombre_imagen, comando, tiempo_inicio, tiempo_estimado):
     nombre_contenedor = f"contenedor_{hashlib.md5(comando.encode()).hexdigest()}"
@@ -55,37 +58,38 @@ def crear_y_ejecutar_contenedor(cliente, nombre_imagen, comando, tiempo_inicio, 
     time.sleep(tiempo_inicio)
     ejecutar_contenedor()
 
-def guardar_comando(comando, tiempo_inicio, tiempo_estimado):
+
+def guardar_comandos_ejecucion(comandos):
     if not os.path.exists(ARCHIVO_COMANDOS):
         with open(ARCHIVO_COMANDOS, 'w') as f:
             json.dump([], f)
     
     with open(ARCHIVO_COMANDOS, 'r') as f:
-        comandos_guardados = json.load(f)
+        ejecuciones_guardadas = json.load(f)
     
-    comandos_guardados.append({
-        "comando": comando,
-        "tiempo_inicio": tiempo_inicio,
-        "tiempo_estimado": tiempo_estimado
+    ejecuciones_guardadas.append({
+        "comandos": comandos
     })
     
     with open(ARCHIVO_COMANDOS, 'w') as f:
-        json.dump(comandos_guardados, f, indent=4)
+        json.dump(ejecuciones_guardadas, f, indent=4)
 
-def listar_comandos():
+
+def listar_ejecuciones():
     if not os.path.exists(ARCHIVO_COMANDOS):
         return []
     
     with open(ARCHIVO_COMANDOS, 'r') as f:
-        comandos_guardados = json.load(f)
+        ejecuciones_guardadas = json.load(f)
     
-    return comandos_guardados
+    return ejecuciones_guardadas
 
 def borrar_comandos_guardados():
     if os.path.exists(ARCHIVO_COMANDOS):
         with open(ARCHIVO_COMANDOS, 'w') as f:
             json.dump([], f)
         print("Comandos guardados borrados.")
+        
 
 def fcfs(comandos):
     comandos_ordenados = sorted(comandos, key=lambda x: x['tiempo_inicio'])
@@ -98,23 +102,34 @@ def fcfs(comandos):
     
     return comandos_ordenados
 
+
 def round_robin(comandos, quantum=2):
     cola = sorted(comandos, key=lambda x: x['tiempo_inicio'])
     tiempo_actual = 0
     resultados = []
-    
-    while cola:
-        comando = cola.pop(0)
-        if comando['tiempo_estimado'] > quantum:
-            comando['tiempo_estimado'] -= quantum
-            tiempo_actual += quantum
-            cola.append(comando)
+    tiempos_restantes = {cmd['comando']: cmd['tiempo_estimado'] for cmd in cola}
+    en_ejecucion = []
+
+    while cola or en_ejecucion:
+        while cola and cola[0]['tiempo_inicio'] <= tiempo_actual:
+            en_ejecucion.append(cola.pop(0))
+
+        if en_ejecucion:
+            comando = en_ejecucion.pop(0)
+            tiempo_ejecucion = min(quantum, tiempos_restantes[comando['comando']])
+            tiempos_restantes[comando['comando']] -= tiempo_ejecucion
+            tiempo_actual += tiempo_ejecucion
+
+            if tiempos_restantes[comando['comando']] > 0:
+                en_ejecucion.append(comando)
+            else:
+                comando['tiempo_final'] = tiempo_actual
+                resultados.append(comando)
         else:
-            tiempo_actual += comando['tiempo_estimado']
-            comando['tiempo_final'] = tiempo_actual
-            resultados.append(comando)
-    
+            tiempo_actual += 1
+
     return resultados
+
 
 def spn(comandos):
     cola = sorted(comandos, key=lambda x: x['tiempo_inicio'])
@@ -122,29 +137,45 @@ def spn(comandos):
     resultados = []
     
     while cola:
-        comando = min(cola, key=lambda x: x['tiempo_estimado'])
+        comando = min(cola, key=lambda x: x['tiempo_estimado'] if x['tiempo_inicio'] <= tiempo_actual else float('inf'))
+        if comando['tiempo_inicio'] > tiempo_actual:
+            tiempo_actual = comando['tiempo_inicio']
         cola.remove(comando)
-        tiempo_actual = max(tiempo_actual, comando['tiempo_inicio'])
         tiempo_actual += comando['tiempo_estimado']
         comando['tiempo_final'] = tiempo_actual
         resultados.append(comando)
     
     return resultados
 
+
 def srt(comandos):
     cola = sorted(comandos, key=lambda x: x['tiempo_inicio'])
     tiempo_actual = 0
     resultados = []
-    
-    while cola:
-        comando = min(cola, key=lambda x: x['tiempo_estimado'])
-        cola.remove(comando)
-        tiempo_actual = max(tiempo_actual, comando['tiempo_inicio'])
-        tiempo_actual += comando['tiempo_estimado']
-        comando['tiempo_final'] = tiempo_actual
-        resultados.append(comando)
-    
+    tiempos_restantes = {cmd['comando']: cmd['tiempo_estimado'] for cmd in cola}
+    en_ejecucion = []
+
+    while cola or en_ejecucion:
+        while cola and cola[0]['tiempo_inicio'] <= tiempo_actual:
+            en_ejecucion.append(cola.pop(0))
+
+        if en_ejecucion:
+            comando = min(en_ejecucion, key=lambda x: tiempos_restantes[x['comando']])
+            en_ejecucion.remove(comando)
+            tiempo_ejecucion = 1  # Ejecutar en unidades de tiempo de 1
+            tiempos_restantes[comando['comando']] -= tiempo_ejecucion
+            tiempo_actual += tiempo_ejecucion
+
+            if tiempos_restantes[comando['comando']] > 0:
+                en_ejecucion.append(comando)
+            else:
+                comando['tiempo_final'] = tiempo_actual
+                resultados.append(comando)
+        else:
+            tiempo_actual += 1
+
     return resultados
+
 
 def hrrn(comandos):
     cola = sorted(comandos, key=lambda x: x['tiempo_inicio'])
@@ -157,14 +188,16 @@ def hrrn(comandos):
             ratio = (espera + comando['tiempo_estimado']) / comando['tiempo_estimado']
             comando['response_ratio'] = ratio
         
-        comando = max(cola, key=lambda x: x['response_ratio'])
+        comando = max(cola, key=lambda x: x['response_ratio'] if x['tiempo_inicio'] <= tiempo_actual else -1)
+        if comando['tiempo_inicio'] > tiempo_actual:
+            tiempo_actual = comando['tiempo_inicio']
         cola.remove(comando)
-        tiempo_actual = max(tiempo_actual, comando['tiempo_inicio'])
         tiempo_actual += comando['tiempo_estimado']
         comando['tiempo_final'] = tiempo_actual
         resultados.append(comando)
     
     return resultados
+
 
 def calcular_tiempos(comandos):
     turnaround_times = []
@@ -189,6 +222,7 @@ def calcular_tiempos(comandos):
         'avg_response_time': avg_response_time
     }
 
+
 def principal():
     cliente = docker.from_env()
     ejecuciones = []
@@ -197,80 +231,85 @@ def principal():
         print("\nOpciones:")
         print("1. Ingresar nuevo comando")
         print("2. Listar y seleccionar comando guardado")
-        print("3. Ejecutar comandos con un algoritmo de planificación")
-        print("4. Listar ejecuciones anteriores")
-        print("5. Salir")
+        print("3. Listar ejecuciones anteriores")
+        print("4. Salir")
         opcion = input("Seleccione una opción: ")
         
         if opcion == '1':
-            comando = input("Ingrese el comando: ")
-            tiempo_inicio = int(input("Ingrese el tiempo de inicio en segundos: "))
-            tiempo_estimado = int(input("Ingrese el tiempo estimado de ejecución en segundos: "))
-            guardar_comando(comando, tiempo_inicio, tiempo_estimado)
-            nombre_imagen = construir_imagen(cliente, comando)
-            crear_y_ejecutar_contenedor(cliente, nombre_imagen, comando, tiempo_inicio, tiempo_estimado)
+            comandos = []
+            while True:
+                comando = input("Ingrese el comando (o 'salir' para finalizar): ")
+                if comando.lower() == 'salir':
+                    break
+                try:
+                    tiempo_inicio = int(input("Ingrese el tiempo de inicio en segundos: "))
+                    tiempo_estimado = int(input("Ingrese el tiempo estimado de ejecución en segundos: "))
+                except ValueError:
+                    print("Por favor ingrese valores válidos para los tiempos.")
+                    continue
+
+                nombre_imagen = construir_imagen(cliente, comando)
+                comandos.append({
+                    "comando": comando,
+                    "tiempo_inicio": tiempo_inicio,
+                    "tiempo_estimado": tiempo_estimado,
+                    "imagen": nombre_imagen
+                })
+            
+            guardar_comandos_ejecucion(comandos)
         
         elif opcion == '2':
-            comandos_guardados = listar_comandos()
-            if not comandos_guardados:
+            ejecuciones_guardadas = listar_ejecuciones()
+            if not ejecuciones_guardadas:
                 print("No hay comandos guardados.")
                 continue
             
-            for idx, cmd in enumerate(comandos_guardados):
-                print(f"{idx + 1}. Comando: {cmd['comando']}, Tiempo de inicio: {cmd['tiempo_inicio']}s, Tiempo estimado: {cmd['tiempo_estimado']}s")
+            for idx, ejec in enumerate(ejecuciones_guardadas):
+                print(f"\nEjecución {idx + 1}:")
+                for cmd in ejec['comandos']:
+                    print(f"  Comando: {cmd['comando']}, Tiempo de inicio: {cmd['tiempo_inicio']}s, Tiempo estimado: {cmd['tiempo_estimado']}s, Imagen: {cmd['imagen']}")
             
-            seleccion = int(input("Seleccione el comando a ejecutar: ")) - 1
-            if 0 <= seleccion < len(comandos_guardados):
-                comando_seleccionado = comandos_guardados[seleccion]
-                nombre_imagen = construir_imagen(cliente, comando_seleccionado['comando'])
-                crear_y_ejecutar_contenedor(cliente, nombre_imagen, comando_seleccionado['comando'], comando_seleccionado['tiempo_inicio'], comando_seleccionado['tiempo_estimado'])
-            else:
-                print("Selección inválida.")
+            seleccion = int(input("\nSeleccione la ejecución a ejecutar: ")) - 1
+            if 0 <= seleccion < len(ejecuciones_guardadas):
+                ejecucion_seleccionada = ejecuciones_guardadas[seleccion]
+                print("\nAlgoritmos de Planificación:")
+                print("1. First Come First Served (FCFS)")
+                print("2. Round Robin")
+                print("3. Shortest Process Next (SPN)")
+                print("4. Shortest Remaining Time (SRT)")
+                print("5. Highest Response Ratio Next (HRRN)")
+
+                algoritmo = input("\nSeleccione un algoritmo: ")
+            
+                if algoritmo == '1':
+                    comandos_planificados = fcfs(ejecucion_seleccionada['comandos'])
+                elif algoritmo == '2':
+                    comandos_planificados = round_robin(ejecucion_seleccionada['comandos'])
+                elif algoritmo == '3':
+                    comandos_planificados = spn(ejecucion_seleccionada['comandos'])
+                elif algoritmo == '4':
+                    comandos_planificados = srt(ejecucion_seleccionada['comandos'])
+                elif algoritmo == '5':
+                    comandos_planificados = hrrn(ejecucion_seleccionada['comandos'])
+                else:
+                    print("Selección inválida.")
+                    continue
+
+                tiempos = calcular_tiempos(comandos_planificados)
+                ejecuciones.append({
+                    'comandos': comandos_planificados,
+                    'algoritmo': algoritmo,
+                    'tiempos': tiempos
+                })
+
+                for comando in comandos_planificados:
+                    crear_y_ejecutar_contenedor(cliente, comando['imagen'], comando['comando'], comando['tiempo_inicio'], comando['tiempo_estimado'])
+                
+                print("\nTiempos calculados:")
+                print(f"Turnaround time promedio: {tiempos['avg_turnaround_time']}")
+                print(f"Response time promedio: {tiempos['avg_response_time']}")
         
         elif opcion == '3':
-            comandos_guardados = listar_comandos()
-            if not comandos_guardados:
-                print("No hay comandos guardados.")
-                continue
-
-            print("\nAlgoritmos de Planificación:")
-            print("1. First Come First Served (FCFS)")
-            print("2. Round Robin")
-            print("3. Shortest Process Next (SPN)")
-            print("4. Shortest Remaining Time (SRT)")
-            print("5. Highest Response Ratio Next (HRRN)")
-            algoritmo = input("Seleccione un algoritmo de planificación: ")
-            
-            if algoritmo == '1':
-                comandos_planificados = fcfs(comandos_guardados)
-            elif algoritmo == '2':
-                comandos_planificados = round_robin(comandos_guardados)
-            elif algoritmo == '3':
-                comandos_planificados = spn(comandos_guardados)
-            elif algoritmo == '4':
-                comandos_planificados = srt(comandos_guardados)
-            elif algoritmo == '5':
-                comandos_planificados = hrrn(comandos_guardados)
-            else:
-                print("Selección inválida.")
-                continue
-
-            tiempos = calcular_tiempos(comandos_planificados)
-            ejecuciones.append({
-                'comandos': comandos_planificados,
-                'algoritmo': algoritmo,
-                'tiempos': tiempos
-            })
-
-            for comando in comandos_planificados:
-                nombre_imagen = construir_imagen(cliente, comando['comando'])
-                crear_y_ejecutar_contenedor(cliente, nombre_imagen, comando['comando'], comando['tiempo_inicio'], comando['tiempo_estimado'])
-            
-            print("Tiempos calculados:")
-            print(f"Turnaround time promedio: {tiempos['avg_turnaround_time']}")
-            print(f"Response time promedio: {tiempos['avg_response_time']}")
-        
-        elif opcion == '4':
             if not ejecuciones:
                 print("No hay ejecuciones anteriores.")
                 continue
@@ -283,15 +322,11 @@ def principal():
                 print(f"Turnaround time promedio: {ejecucion['tiempos']['avg_turnaround_time']}")
                 print(f"Response time promedio: {ejecucion['tiempos']['avg_response_time']}")
         
-        elif opcion == '5':
+        elif opcion == '4':
             borrar_comandos_guardados()
             break
         else:
             print("Opción no válida, intente nuevamente.")
-
-if __name__ == "__main__":
-    principal()
-
 
 if __name__ == "__main__":
     principal()
