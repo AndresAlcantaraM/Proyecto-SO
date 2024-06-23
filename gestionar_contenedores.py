@@ -104,32 +104,47 @@ def fcfs(comandos):
 
 
 def round_robin(comandos, quantum=2):
-    cola = sorted(comandos, key=lambda x: x['tiempo_inicio'])
     tiempo_actual = 0
-    resultados = []
-    tiempos_restantes = {cmd['comando']: cmd['tiempo_estimado'] for cmd in cola}
-    en_ejecucion = []
+    cola = []
+    comandos_ordenados = sorted(comandos, key=lambda x: x['tiempo_inicio'])
+    
+    indice = 0
+    for comando in comandos_ordenados:
+        comando['restante'] = comando['tiempo_estimado']
+        comando['iniciado'] = False
 
-    while cola or en_ejecucion:
-        while cola and cola[0]['tiempo_inicio'] <= tiempo_actual:
-            en_ejecucion.append(cola.pop(0))
+    while cola or indice < len(comandos_ordenados):
+        if not cola:
+            if indice < len(comandos_ordenados):
+                tiempo_actual = comandos_ordenados[indice]['tiempo_inicio']
+                while indice < len(comandos_ordenados) and comandos_ordenados[indice]['tiempo_inicio'] <= tiempo_actual:
+                    cola.append(comandos_ordenados[indice])
+                    indice += 1
+        
+        comando_actual = cola.pop(0)
 
-        if en_ejecucion:
-            comando = en_ejecucion.pop(0)
-            tiempo_ejecucion = min(quantum, tiempos_restantes[comando['comando']])
-            tiempos_restantes[comando['comando']] -= tiempo_ejecucion
-            tiempo_actual += tiempo_ejecucion
+        if not comando_actual['iniciado']:
+            comando_actual['iniciado'] = True
+            comando_actual['inicio_efectivo'] = tiempo_actual
 
-            if tiempos_restantes[comando['comando']] > 0:
-                en_ejecucion.append(comando)
-            else:
-                comando['tiempo_final'] = tiempo_actual
-                resultados.append(comando)
+        tiempo_ejecucion = min(quantum, comando_actual['restante'])
+        
+        comando_actual['restante'] -= tiempo_ejecucion
+        
+        tiempo_actual += tiempo_ejecucion
+        
+        while indice < len(comandos_ordenados) and comandos_ordenados[indice]['tiempo_inicio'] <= tiempo_actual:
+            cola.append(comandos_ordenados[indice])
+            indice += 1
+        
+        # Si el comando aún no ha terminado, reinsertarlo al final de la cola
+        if comando_actual['restante'] > 0:
+            cola.append(comando_actual)
         else:
-            tiempo_actual += 1
-
-    return resultados
-
+            # Si el comando ha terminado, registrar su tiempo de finalización
+            comando_actual['tiempo_final'] = tiempo_actual
+    
+    return comandos_ordenados
 
 def spn(comandos):
     cola = sorted(comandos, key=lambda x: x['tiempo_inicio'])
