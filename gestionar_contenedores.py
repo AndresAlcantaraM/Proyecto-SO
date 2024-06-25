@@ -2,11 +2,23 @@ import docker
 import time
 import hashlib
 import io
-import json
-import os
+import psycopg2
+from psycopg2.extras import Json
 
-# Archivo donde se guardarán los comandos
-ARCHIVO_COMANDOS = "comandos.json"
+# Database connection parameters
+DB_NAME = "postgres"
+DB_USER = "postgres"
+DB_PASSWORD = "pg123"
+DB_HOST = "172.25.98.220"
+
+
+def conectar_db():
+    return psycopg2.connect(
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        host=DB_HOST
+    )
 
 
 def generar_dockerfile(comando):
@@ -60,36 +72,38 @@ def crear_y_ejecutar_contenedor(cliente, nombre_imagen, comando, tiempo_inicio, 
 
 
 def guardar_comandos_ejecucion(comandos):
-    if not os.path.exists(ARCHIVO_COMANDOS):
-        with open(ARCHIVO_COMANDOS, 'w') as f:
-            json.dump([], f)
-    
-    with open(ARCHIVO_COMANDOS, 'r') as f:
-        ejecuciones_guardadas = json.load(f)
-    
-    ejecuciones_guardadas.append({
-        "comandos": comandos
-    })
-    
-    with open(ARCHIVO_COMANDOS, 'w') as f:
-        json.dump(ejecuciones_guardadas, f, indent=4)
-
+    conn = conectar_db()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO ejecuciones (comandos, algoritmo, tiempos) VALUES (%s, %s, %s)", (Json(comandos), '', Json({})))
+    conn.commit()
+    cur.close()
+    conn.close()
 
 def listar_ejecuciones():
-    if not os.path.exists(ARCHIVO_COMANDOS):
-        return []
-    
-    with open(ARCHIVO_COMANDOS, 'r') as f:
-        ejecuciones_guardadas = json.load(f)
-    
-    return ejecuciones_guardadas
+    conn = conectar_db()
+    cur = conn.cursor()
+    cur.execute("SELECT id, comandos FROM ejecuciones")
+    ejecuciones_guardadas = cur.fetchall()
+    cur.close()
+    conn.close()
+    return [{'id': row[0], 'comandos': row[1]} for row in ejecuciones_guardadas]
+
+def actualizar_ejecucion(id, algoritmo, tiempos):
+    conn = conectar_db()
+    cur = conn.cursor()
+    cur.execute("UPDATE ejecuciones SET algoritmo = %s, tiempos = %s WHERE id = %s", (algoritmo, Json(tiempos), id))
+    conn.commit()
+    cur.close()
+    conn.close()
 
 def borrar_comandos_guardados():
-    if os.path.exists(ARCHIVO_COMANDOS):
-        with open(ARCHIVO_COMANDOS, 'w') as f:
-            json.dump([], f)
-        print("Comandos guardados borrados.")
-        
+    conn = conectar_db()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM ejecuciones")
+    conn.commit()
+    cur.close()
+    conn.close()
+    print("Comandos guardados borrados.")
 
 def fcfs(comandos):
     comandos_ordenados = sorted(comandos, key=lambda x: x['tiempo_inicio'])
@@ -249,7 +263,7 @@ def principal():
         print("3. Listar ejecuciones anteriores")
         print("4. Salir")
         opcion = input("Seleccione una opción: ")
-        
+
         if opcion == '1':
             comandos = []
             while True:
@@ -264,71 +278,79 @@ def principal():
                     continue
 
                 nombre_imagen = construir_imagen(cliente, comando)
-                comandos.append({
-                    "comando": comando,
-                    "tiempo_inicio": tiempo_inicio,
-                    "tiempo_estimado": tiempo_estimado,
-                    "imagen": nombre_imagen
-                })
-            
+                if nombre_imagen:
+                    comandos.append({
+                        "comando": comando,
+                        "tiempo_inicio": tiempo_inicio,
+                        "tiempo_estimado": tiempo_estimado,
+                        "imagen": nombre_imagen
+                    })
+
             guardar_comandos_ejecucion(comandos)
-        
+
         elif opcion == '2':
             ejecuciones_guardadas = listar_ejecuciones()
             if not ejecuciones_guardadas:
                 print("No hay comandos guardados.")
                 continue
-            
+
             for idx, ejec in enumerate(ejecuciones_guardadas):
                 print(f"\nEjecución {idx + 1}:")
                 for cmd in ejec['comandos']:
                     print(f"  Comando: {cmd['comando']}, Tiempo de inicio: {cmd['tiempo_inicio']}s, Tiempo estimado: {cmd['tiempo_estimado']}s, Imagen: {cmd['imagen']}")
-            
-            seleccion = int(input("\nSeleccione la ejecución a ejecutar: ")) - 1
-            if 0 <= seleccion < len(ejecuciones_guardadas):
-                ejecucion_seleccionada = ejecuciones_guardadas[seleccion]
-                print("\nAlgoritmos de Planificación:")
-                print("1. First Come First Served (FCFS)")
-                print("2. Round Robin")
-                print("3. Shortest Process Next (SPN)")
-                print("4. Shortest Remaining Time (SRT)")
-                print("5. Highest Response Ratio Next (HRRN)")
 
-                algoritmo = input("\nSeleccione un algoritmo: ")
-            
-                if algoritmo == '1':
-                    comandos_planificados = fcfs(ejecucion_seleccionada['comandos'])
-                elif algoritmo == '2':
-                    comandos_planificados = round_robin(ejecucion_seleccionada['comandos'])
-                elif algoritmo == '3':
-                    comandos_planificados = spn(ejecucion_seleccionada['comandos'])
-                elif algoritmo == '4':
-                    comandos_planificados = srt(ejecucion_seleccionada['comandos'])
-                elif algoritmo == '5':
-                    comandos_planificados = hrrn(ejecucion_seleccionada['comandos'])
+            try:
+                seleccion = int(input("\nSeleccione la ejecución a ejecutar: ")) - 1
+                if 0 <= seleccion < len(ejecuciones_guardadas):
+                    ejecucion_seleccionada = ejecuciones_guardadas[seleccion]
+                    print("\nAlgoritmos de Planificación:")
+                    print("1. First Come First Served (FCFS)")
+                    print("2. Round Robin")
+                    print("3. Shortest Process Next (SPN)")
+                    print("4. Shortest Remaining Time (SRT)")
+                    print("5. Highest Response Ratio Next (HRRN)")
+
+                    algoritmo = input("\nSeleccione un algoritmo: ")
+
+                    if algoritmo == '1':
+                        comandos_planificados = fcfs(ejecucion_seleccionada['comandos'])
+                    elif algoritmo == '2':
+                        comandos_planificados = round_robin(ejecucion_seleccionada['comandos'])
+                    elif algoritmo == '3':
+                        comandos_planificados = spn(ejecucion_seleccionada['comandos'])
+                    elif algoritmo == '4':
+                        comandos_planificados = srt(ejecucion_seleccionada['comandos'])
+                    elif algoritmo == '5':
+                        comandos_planificados = hrrn(ejecucion_seleccionada['comandos'])
+                    else:
+                        print("Selección inválida.")
+                        continue
+
+                    tiempos = calcular_tiempos(comandos_planificados)
+                    ejecuciones.append({
+                        'comandos': comandos_planificados,
+                        'algoritmo': algoritmo,
+                        'tiempos': tiempos
+                    })
+
+                    actualizar_ejecucion(ejecucion_seleccionada['id'], algoritmo, tiempos)
+
+                    for comando in comandos_planificados:
+                        crear_y_ejecutar_contenedor(cliente, comando['imagen'], comando['comando'], comando['tiempo_inicio'], comando['tiempo_estimado'])
+
+                    print("\nTiempos calculados:")
+                    print(f"Turnaround time promedio: {tiempos['avg_turnaround_time']}")
+                    print(f"Response time promedio: {tiempos['avg_response_time']}")
                 else:
                     print("Selección inválida.")
-                    continue
+            except ValueError:
+                print("Entrada inválida. Intente nuevamente.")
 
-                tiempos = calcular_tiempos(comandos_planificados)
-                ejecuciones.append({
-                    'comandos': comandos_planificados,
-                    'algoritmo': algoritmo,
-                    'tiempos': tiempos
-                })
-
-                for comando in comandos_planificados:
-                    crear_y_ejecutar_contenedor(cliente, comando['imagen'], comando['comando'], comando['tiempo_inicio'], comando['tiempo_estimado'])
-                
-                print("\nTiempos calculados:")
-                print(f"Turnaround time promedio: {tiempos['avg_turnaround_time']}")
-                print(f"Response time promedio: {tiempos['avg_response_time']}")
-        
         elif opcion == '3':
             if not ejecuciones:
                 print("No hay ejecuciones anteriores.")
                 continue
-            
+
             for idx, ejecucion in enumerate(ejecuciones):
                 print(f"\nEjecución {idx + 1}:")
                 print(f"Algoritmo: {ejecucion['algoritmo']}")
@@ -336,7 +358,7 @@ def principal():
                     print(f"Comando: {comando['comando']}, Turnaround time: {comando['turnaround_time']}, Response time: {comando['response_time']}")
                 print(f"Turnaround time promedio: {ejecucion['tiempos']['avg_turnaround_time']}")
                 print(f"Response time promedio: {ejecucion['tiempos']['avg_response_time']}")
-        
+
         elif opcion == '4':
             borrar_comandos_guardados()
             break
