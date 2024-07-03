@@ -9,7 +9,7 @@ from psycopg2.extras import Json
 DB_NAME = "postgres"
 DB_USER = "postgres"
 DB_PASSWORD = "pg123"
-DB_HOST = "172.25.98.220"
+DB_HOST = "172.27.80.1"
 
 
 def conectar_db():
@@ -71,27 +71,81 @@ def crear_y_ejecutar_contenedor(cliente, nombre_imagen, comando, tiempo_inicio, 
     ejecutar_contenedor()
 
 
-def guardar_comandos_ejecucion(comandos):
+def guardar_comandos_ejecucion(comandos, algoritmo):
     conn = conectar_db()
     cur = conn.cursor()
-    cur.execute("INSERT INTO ejecuciones (comandos, algoritmo, tiempos) VALUES (%s, %s, %s)", (Json(comandos), '', Json({})))
+    
+    cur.execute("""
+        INSERT INTO ejecuciones (algoritmo)
+        VALUES (%s) RETURNING id
+    """, (algoritmo,))
+    ejecucion_id = cur.fetchone()[0]
+    
+    for comando in comandos:
+        cur.execute("""
+            INSERT INTO comandos (ejecucion_id, comando, tiempo_inicio, tiempo_estimado, imagen)
+            VALUES (%s, %s, %s, %s, %s) RETURNING id
+        """, (ejecucion_id, comando['comando'], comando['tiempo_inicio'], comando['tiempo_estimado'], comando['imagen']))
+        comando_id = cur.fetchone()[0]
+        comando['id'] = comando_id
+    
     conn.commit()
     cur.close()
     conn.close()
 
+
 def listar_ejecuciones():
     conn = conectar_db()
     cur = conn.cursor()
-    cur.execute("SELECT id, comandos FROM ejecuciones")
-    ejecuciones_guardadas = cur.fetchall()
+    
+    cur.execute("""
+        SELECT id, algoritmo, avg_response_time, avg_turnaround_time FROM ejecuciones
+    """)
+    ejecuciones = cur.fetchall()
+    
+    ejecuciones_guardadas = []  
+    for ejec in ejecuciones:
+        cur.execute("""
+            SELECT comando, tiempo_inicio, tiempo_estimado, imagen, id
+            FROM comandos WHERE ejecucion_id = %s
+        """, (ejec[0],))
+        comandos = cur.fetchall()
+        ejecuciones_guardadas.append({
+            'id_ejec': ejec[0],
+            'algoritmo': ejec[1],
+            'avg_response_time': ejec[2],
+            'avg_turnaround_time': ejec[3],
+            'comandos': [{'comando': cmd[0], 'tiempo_inicio': cmd[1], 'tiempo_estimado': cmd[2], 'imagen': cmd[3], 'id' : cmd[4]} for cmd in comandos]
+        })
+    
     cur.close()
     conn.close()
-    return [{'id': row[0], 'comandos': row[1]} for row in ejecuciones_guardadas]
+    return ejecuciones_guardadas
 
-def actualizar_ejecucion(id, algoritmo, tiempos):
+def actualizar_ejecucion(ejecucion_id, algoritmo, tiempos):
     conn = conectar_db()
     cur = conn.cursor()
-    cur.execute("UPDATE ejecuciones SET algoritmo = %s, tiempos = %s WHERE id = %s", (algoritmo, Json(tiempos), id))
+    
+    cur.execute("""
+        UPDATE ejecuciones
+        SET algoritmo = %s, avg_response_time = %s, avg_turnaround_time = %s
+        WHERE id = %s
+    """, (algoritmo, tiempos['avg_response_time'], tiempos['avg_turnaround_time'], ejecucion_id))
+    
+    conn.commit()
+    cur.close()
+    conn.close()
+
+def actualizar_tiempos_comando(comando):
+    conn = conectar_db()
+    cur = conn.cursor()
+    
+    cur.execute("""
+        UPDATE comandos
+        SET tiempo_final = %s, response_time = %s, turnaround_time = %s
+        WHERE id = %s
+    """, (comando['tiempo_final'], comando['response_time'], comando['turnaround_time'], comando['id']))
+    
     conn.commit()
     cur.close()
     conn.close()
@@ -100,6 +154,7 @@ def borrar_comandos_guardados():
     conn = conectar_db()
     cur = conn.cursor()
     cur.execute("DELETE FROM ejecuciones")
+    cur.execute("DELETE FROM comandos")
     conn.commit()
     cur.close()
     conn.close()
@@ -161,21 +216,40 @@ def round_robin(comandos, quantum=2):
     return comandos_ordenados
 
 def spn(comandos):
+    # Ordena los comandos por el tiempo de inicio
     cola = sorted(comandos, key=lambda x: x['tiempo_inicio'])
     tiempo_actual = 0
     resultados = []
-    
-    while cola:
-        comando = min(cola, key=lambda x: x['tiempo_estimado'] if x['tiempo_inicio'] <= tiempo_actual else float('inf'))
-        if comando['tiempo_inicio'] > tiempo_actual:
-            tiempo_actual = comando['tiempo_inicio']
-        cola.remove(comando)
-        tiempo_actual += comando['tiempo_estimado']
-        comando['tiempo_final'] = tiempo_actual
-        resultados.append(comando)
-    
-    return resultados
 
+    while cola:
+        # Filtra los comandos que ya están disponibles para ejecutarse
+        disponibles = [cmd for cmd in cola if cmd['tiempo_inicio'] <= tiempo_actual]
+
+        if not disponibles:
+            # Si no hay comandos disponibles, avanza el tiempo al tiempo de inicio del siguiente comando
+            tiempo_actual = cola[0]['tiempo_inicio']
+            continue
+
+        # Selecciona el comando con el menor tiempo estimado de los disponibles
+        comando = min(disponibles, key=lambda x: x['tiempo_estimado'])
+
+        if comando['tiempo_inicio'] > tiempo_actual:
+            # Si el tiempo de inicio del comando es mayor que el tiempo actual, actualiza el tiempo actual
+            tiempo_actual = comando['tiempo_inicio']
+
+        # Remueve el comando seleccionado de la cola
+        cola.remove(comando)
+
+        # Ejecuta el comando actualizando el tiempo actual con su tiempo estimado
+        tiempo_actual += comando['tiempo_estimado']
+        
+        # Establece el tiempo final del comando como el tiempo actual después de la ejecución
+        comando['tiempo_final'] = tiempo_actual
+
+        # Añade el comando al resultado
+        resultados.append(comando)
+
+    return resultados
 
 def srt(comandos):
     cola = sorted(comandos, key=lambda x: x['tiempo_inicio'])
@@ -206,27 +280,38 @@ def srt(comandos):
     return resultados
 
 
+
 def hrrn(comandos):
     cola = sorted(comandos, key=lambda x: x['tiempo_inicio'])
     tiempo_actual = 0
     resultados = []
     
     while cola:
+        # Calcula la razón de respuesta para cada proceso que ha llegado
         for comando in cola:
-            espera = max(0, tiempo_actual - comando['tiempo_inicio'])
-            ratio = (espera + comando['tiempo_estimado']) / comando['tiempo_estimado']
-            comando['response_ratio'] = ratio
+            if comando['tiempo_inicio'] <= tiempo_actual:
+                espera = tiempo_actual - comando['tiempo_inicio']
+                ratio = (espera + comando['tiempo_estimado']) / comando['tiempo_estimado']
+                comando['response_ratio'] = ratio
+            else:
+                comando['response_ratio'] = -1  # No considerar procesos que no han llegado
         
-        comando = max(cola, key=lambda x: x['response_ratio'] if x['tiempo_inicio'] <= tiempo_actual else -1)
+        # Selecciona el proceso con la mayor razón de respuesta
+        comando = max(cola, key=lambda x: x['response_ratio'])
+        if comando['response_ratio'] == -1:
+            tiempo_actual = cola[0]['tiempo_inicio']
+            continue
+        
+        # Si el proceso aún no ha llegado, espera
         if comando['tiempo_inicio'] > tiempo_actual:
             tiempo_actual = comando['tiempo_inicio']
+        
         cola.remove(comando)
         tiempo_actual += comando['tiempo_estimado']
         comando['tiempo_final'] = tiempo_actual
         resultados.append(comando)
     
     return resultados
-
 
 def calcular_tiempos(comandos):
     turnaround_times = []
@@ -283,10 +368,11 @@ def principal():
                         "comando": comando,
                         "tiempo_inicio": tiempo_inicio,
                         "tiempo_estimado": tiempo_estimado,
-                        "imagen": nombre_imagen
+                        "imagen": nombre_imagen,
+                        "id" : -1
                     })
 
-            guardar_comandos_ejecucion(comandos)
+            guardar_comandos_ejecucion(comandos, "")
 
         elif opcion == '2':
             ejecuciones_guardadas = listar_ejecuciones()
@@ -311,7 +397,6 @@ def principal():
                     print("5. Highest Response Ratio Next (HRRN)")
 
                     algoritmo = input("\nSeleccione un algoritmo: ")
-
                     if algoritmo == '1':
                         comandos_planificados = fcfs(ejecucion_seleccionada['comandos'])
                     elif algoritmo == '2':
@@ -333,11 +418,12 @@ def principal():
                         'tiempos': tiempos
                     })
 
-                    actualizar_ejecucion(ejecucion_seleccionada['id'], algoritmo, tiempos)
+                    actualizar_ejecucion(ejecucion_seleccionada['id_ejec'], algoritmo, tiempos)
 
                     for comando in comandos_planificados:
                         crear_y_ejecutar_contenedor(cliente, comando['imagen'], comando['comando'], comando['tiempo_inicio'], comando['tiempo_estimado'])
-
+                        actualizar_tiempos_comando(comando)
+                    
                     print("\nTiempos calculados:")
                     print(f"Turnaround time promedio: {tiempos['avg_turnaround_time']}")
                     print(f"Response time promedio: {tiempos['avg_response_time']}")
