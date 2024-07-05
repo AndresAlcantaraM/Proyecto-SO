@@ -9,3 +9,18 @@ El proyecto se desarrollo en python, en donde se utilizo la libreria psycopg2 pa
 Andrés Felipe Alcántara Muñoz 2242517
 
 Miguel Ángel Salcedo Urian 2242786
+
+## Inicialización
+
+Una vez dentro de la carpeta raíz del proyecto procedemos a crear el contenedor para la base de datos (debe tener Docker en ejecución):
+```sh
+docker build -t imagen_proyecto .
+docker run --name contenedor_proyecto -p 5432:5432 -e POSTGRES_PASSWORD=pg123 -d imagen_proyecto
+```
+Despues de crear el servidor de la base de datos mediante la conexión al contenedor, debemos tener en cuenta que se debe actualizar la dirección ip y la contraseña de la base de datos (en caso de no haber usado la del documento).
+
+Verificamos tener instalados los siguientes requisitos:
+```sh
+psycopg2 pip install psycopg2
+docker pip install docker
+```
