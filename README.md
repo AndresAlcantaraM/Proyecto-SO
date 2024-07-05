@@ -21,6 +21,10 @@ Despues de crear el servidor de la base de datos mediante la conexión al conten
 
 Verificamos tener instalados los siguientes requisitos:
 ```sh
-psycopg2 pip install psycopg2
-docker pip install docker
+psycopg2: pip install psycopg2
+docker: pip install docker
+```
+Finalmente ejecutamos el archivo Gestionar_contenedores.py, para acceder al menu de la aplicacion
+```sh
+python Gestionar_contenedores.py
 ```
