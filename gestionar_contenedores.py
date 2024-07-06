@@ -403,7 +403,7 @@ def principal():
     while True:
         print("\nOpciones:")
         print("1. Ingresar nuevo comando")
-        print("2. Listar y seleccionar comando guardado")
+        print("2. Listar, seleccionar y ejecutar bloque guardado")
         print("3. Listar ejecuciones anteriores")
         print("4. Salir")
         opcion = input("Seleccione una opción: ")
