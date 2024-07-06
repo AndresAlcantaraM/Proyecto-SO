@@ -1,16 +1,13 @@
-import docker
 import time
+import docker
 import hashlib
 import io
 import psycopg2
-from psycopg2.extras import Json
 
-# Database connection parameters
 DB_NAME = "postgres"
 DB_USER = "postgres"
 DB_PASSWORD = "pg123"
-DB_HOST = "172.27.80.1"
-
+DB_HOST = "Tu dirección ip aquí"
 
 def conectar_db():
     return psycopg2.connect(
@@ -45,30 +42,23 @@ def construir_imagen(cliente, comando):
     return nombre_imagen
 
 
-def crear_y_ejecutar_contenedor(cliente, nombre_imagen, comando, tiempo_inicio, tiempo_estimado):
+def crear_y_ejecutar_contenedor(cliente, nombre_imagen, comando):
     nombre_contenedor = f"contenedor_{hashlib.md5(comando.encode()).hexdigest()}"
     
-    def ejecutar_contenedor():
-        # Verificar si un contenedor con el mismo nombre ya existe y eliminarlo
-        try:
-            contenedor_existente = cliente.containers.get(nombre_contenedor)
-            print(f"Eliminando contenedor existente con el nombre '{nombre_contenedor}'...")
-            contenedor_existente.remove(force=True)
-            print(f"Contenedor existente '{nombre_contenedor}' eliminado.")
-        except docker.errors.NotFound:
-            pass  # No existe un contenedor con ese nombre, podemos continuar
+    # Verificar si un contenedor con el mismo nombre ya existe y eliminarlo
+    try:
+        contenedor_existente = cliente.containers.get(nombre_contenedor)
+        print(f"Eliminando contenedor existente con el nombre '{nombre_contenedor}'...")
+        contenedor_existente.remove(force=True)
+        print(f"Contenedor existente '{nombre_contenedor}' eliminado.")
+    except docker.errors.NotFound:
+        pass  # No existe un contenedor con ese nombre, se continúa la ejecución
 
-        print(f"Iniciando contenedor para el comando '{comando}'...")
-        contenedor = cliente.containers.run(nombre_imagen, detach=True, name=nombre_contenedor)
-        print(f"El contenedor para el comando '{comando}' está en ejecución.")
-        # Esperar el tiempo estimado
-        time.sleep(tiempo_estimado)
-        contenedor.stop()
-        print(f"El contenedor para el comando '{comando}' ha sido ejecutado.")
+    print(f"Iniciando contenedor para el comando '{comando}'...")
+    contenedor = cliente.containers.run(nombre_imagen, detach=True, name=nombre_contenedor)
+    print(f"El contenedor para el comando '{comando}' está en ejecución.")
     
-    print(f"Esperando {tiempo_inicio} segundos para iniciar el contenedor para el comando '{comando}'...")
-    time.sleep(tiempo_inicio)
-    ejecutar_contenedor()
+    return contenedor
 
 
 def guardar_comandos_ejecucion(comandos, algoritmo):
@@ -153,34 +143,41 @@ def actualizar_tiempos_comando(comando):
 def borrar_comandos_guardados():
     conn = conectar_db()
     cur = conn.cursor()
-    cur.execute("DELETE FROM ejecuciones")
     cur.execute("DELETE FROM comandos")
+    cur.execute("DELETE FROM ejecuciones")
     conn.commit()
     cur.close()
     conn.close()
     print("Comandos guardados borrados.")
 
-def fcfs(comandos):
+def fcfs(cliente, comandos):
     comandos_ordenados = sorted(comandos, key=lambda x: x['tiempo_inicio'])
     tiempo_actual = 0
     
     for comando in comandos_ordenados:
         tiempo_actual = max(tiempo_actual, comando['tiempo_inicio'])
+        contenedor = crear_y_ejecutar_contenedor(cliente, comando['imagen'], comando['comando'])
         tiempo_actual += comando['tiempo_estimado']
+        contenedor.stop()
         comando['tiempo_final'] = tiempo_actual
     
     return comandos_ordenados
 
 
-def round_robin(comandos, quantum=2):
+def round_robin(cliente, comandos, quantum=2):
     tiempo_actual = 0
     cola = []
     comandos_ordenados = sorted(comandos, key=lambda x: x['tiempo_inicio'])
-    
+
     indice = 0
     for comando in comandos_ordenados:
         comando['restante'] = comando['tiempo_estimado']
         comando['iniciado'] = False
+        comando['contenedor'] = crear_y_ejecutar_contenedor(cliente, comando['imagen'], comando['comando'])
+        try:
+            comando['contenedor'].pause()
+        except docker.errors.APIError as e:
+            pass
 
     while cola or indice < len(comandos_ordenados):
         if not cola:
@@ -189,74 +186,93 @@ def round_robin(comandos, quantum=2):
                 while indice < len(comandos_ordenados) and comandos_ordenados[indice]['tiempo_inicio'] <= tiempo_actual:
                     cola.append(comandos_ordenados[indice])
                     indice += 1
-        
-        comando_actual = cola.pop(0)
 
-        if not comando_actual['iniciado']:
-            comando_actual['iniciado'] = True
-            comando_actual['inicio_efectivo'] = tiempo_actual
+        if cola:
+            comando_actual = cola.pop(0)
 
-        tiempo_ejecucion = min(quantum, comando_actual['restante'])
-        
-        comando_actual['restante'] -= tiempo_ejecucion
-        
-        tiempo_actual += tiempo_ejecucion
-        
-        while indice < len(comandos_ordenados) and comandos_ordenados[indice]['tiempo_inicio'] <= tiempo_actual:
-            cola.append(comandos_ordenados[indice])
-            indice += 1
-        
-        # Si el comando aún no ha terminado, reinsertarlo al final de la cola
-        if comando_actual['restante'] > 0:
-            cola.append(comando_actual)
+            if not comando_actual['iniciado']:
+                comando_actual['iniciado'] = True
+                comando_actual['inicio_efectivo'] = tiempo_actual
+
+            tiempo_ejecucion = min(quantum, comando_actual['restante'])
+
+            comando_actual['restante'] -= tiempo_ejecucion
+
+            try:
+                comando_actual['contenedor'].unpause()
+                time.sleep(tiempo_ejecucion)
+                comando_actual['contenedor'].pause()
+            except docker.errors.APIError as e:
+                pass
+
+            tiempo_actual += tiempo_ejecucion
+
+            while indice < len(comandos_ordenados) and comandos_ordenados[indice]['tiempo_inicio'] <= tiempo_actual:
+                cola.append(comandos_ordenados[indice])
+                indice += 1
+
+            if comando_actual['restante'] > 0:
+                cola.append(comando_actual)
+            else:
+                comando_actual['tiempo_final'] = tiempo_actual
+                comando_actual['contenedor'].stop()
         else:
-            # Si el comando ha terminado, registrar su tiempo de finalización
-            comando_actual['tiempo_final'] = tiempo_actual
-    
+            tiempo_actual += 1
+
     return comandos_ordenados
 
-def spn(comandos):
-    # Ordena los comandos por el tiempo de inicio
+def spn(cliente, comandos):
     cola = sorted(comandos, key=lambda x: x['tiempo_inicio'])
     tiempo_actual = 0
     resultados = []
 
+    # Crear una lista para mantener el orden original de los comandos
+    comandos_originales = comandos[:]
+
     while cola:
-        # Filtra los comandos que ya están disponibles para ejecutarse
         disponibles = [cmd for cmd in cola if cmd['tiempo_inicio'] <= tiempo_actual]
 
         if not disponibles:
-            # Si no hay comandos disponibles, avanza el tiempo al tiempo de inicio del siguiente comando
             tiempo_actual = cola[0]['tiempo_inicio']
             continue
 
-        # Selecciona el comando con el menor tiempo estimado de los disponibles
         comando = min(disponibles, key=lambda x: x['tiempo_estimado'])
 
         if comando['tiempo_inicio'] > tiempo_actual:
-            # Si el tiempo de inicio del comando es mayor que el tiempo actual, actualiza el tiempo actual
             tiempo_actual = comando['tiempo_inicio']
 
-        # Remueve el comando seleccionado de la cola
-        cola.remove(comando)
-
-        # Ejecuta el comando actualizando el tiempo actual con su tiempo estimado
-        tiempo_actual += comando['tiempo_estimado']
+        comando['contenedor'] = crear_y_ejecutar_contenedor(cliente, comando['imagen'], comando['comando'])
         
-        # Establece el tiempo final del comando como el tiempo actual después de la ejecución
+        tiempo_actual += comando['tiempo_estimado']
         comando['tiempo_final'] = tiempo_actual
-
-        # Añade el comando al resultado
+        comando['contenedor'].stop()
         resultados.append(comando)
 
-    return resultados
+        cola.remove(comando)
 
-def srt(comandos):
+    # Restaurar el orden original de los comandos
+    resultados_ordenados = []
+    for original in comandos_originales:
+        for resultado in resultados:
+            if resultado['imagen'] == original['imagen'] and resultado['comando'] == original['comando']:
+                resultados_ordenados.append(resultado)
+                break
+
+    return resultados_ordenados
+
+
+def srt(cliente, comandos):
     cola = sorted(comandos, key=lambda x: x['tiempo_inicio'])
     tiempo_actual = 0
     resultados = []
     tiempos_restantes = {cmd['comando']: cmd['tiempo_estimado'] for cmd in cola}
     en_ejecucion = []
+
+
+    comandos_originales = comandos[:]
+
+    for comando in cola:
+        comando['contenedor'] = crear_y_ejecutar_contenedor(cliente, comando['imagen'], comando['comando'])
 
     while cola or en_ejecucion:
         while cola and cola[0]['tiempo_inicio'] <= tiempo_actual:
@@ -266,8 +282,21 @@ def srt(comandos):
             comando = min(en_ejecucion, key=lambda x: tiempos_restantes[x['comando']])
             en_ejecucion.remove(comando)
             tiempo_ejecucion = 1  # Ejecutar en unidades de tiempo de 1
+
+            try:
+                if comando['contenedor'].status == 'paused':
+                    comando['contenedor'].unpause()
+            except docker.errors.APIError as e:
+                print(f"Error al reanudar el contenedor {comando['contenedor'].id}: {e}")
+
             tiempos_restantes[comando['comando']] -= tiempo_ejecucion
             tiempo_actual += tiempo_ejecucion
+
+            try:
+                if comando['contenedor'].status == 'running':
+                    comando['contenedor'].pause()
+            except docker.errors.APIError as e:
+                print(f"Error al pausar el contenedor {comando['contenedor'].id}: {e}")
 
             if tiempos_restantes[comando['comando']] > 0:
                 en_ejecucion.append(comando)
@@ -277,15 +306,29 @@ def srt(comandos):
         else:
             tiempo_actual += 1
 
-    return resultados
+
+    resultados_ordenados = []
+    for original in comandos_originales:
+        for resultado in resultados:
+            if resultado['imagen'] == original['imagen'] and resultado['comando'] == original['comando']:
+                resultados_ordenados.append(resultado)
+                break
+
+    return resultados_ordenados
 
 
-
-def hrrn(comandos):
+def hrrn(cliente, comandos):
     cola = sorted(comandos, key=lambda x: x['tiempo_inicio'])
     tiempo_actual = 0
     resultados = []
-    
+
+
+    comandos_originales = comandos[:]
+
+
+    for comando in cola:
+        comando['contenedor'] = crear_y_ejecutar_contenedor(cliente, comando['imagen'], comando['comando'])
+
     while cola:
         # Calcula la razón de respuesta para cada proceso que ha llegado
         for comando in cola:
@@ -295,23 +338,40 @@ def hrrn(comandos):
                 comando['response_ratio'] = ratio
             else:
                 comando['response_ratio'] = -1  # No considerar procesos que no han llegado
-        
+
         # Selecciona el proceso con la mayor razón de respuesta
         comando = max(cola, key=lambda x: x['response_ratio'])
         if comando['response_ratio'] == -1:
             tiempo_actual = cola[0]['tiempo_inicio']
             continue
-        
+
         # Si el proceso aún no ha llegado, espera
         if comando['tiempo_inicio'] > tiempo_actual:
             tiempo_actual = comando['tiempo_inicio']
-        
+
+        # Ejecutar el comando
+        try:
+            if comando['contenedor'].status == 'paused':
+                comando['contenedor'].unpause()
+            time.sleep(comando['tiempo_estimado'])
+            comando['contenedor'].stop()
+        except docker.errors.APIError as e:
+            pass
+
         cola.remove(comando)
         tiempo_actual += comando['tiempo_estimado']
         comando['tiempo_final'] = tiempo_actual
         resultados.append(comando)
-    
-    return resultados
+
+
+    resultados_ordenados = []
+    for original in comandos_originales:
+        for resultado in resultados:
+            if resultado['imagen'] == original['imagen'] and resultado['comando'] == original['comando']:
+                resultados_ordenados.append(resultado)
+                break
+
+    return resultados_ordenados
 
 def calcular_tiempos(comandos):
     turnaround_times = []
@@ -335,7 +395,6 @@ def calcular_tiempos(comandos):
         'avg_turnaround_time': avg_turnaround_time,
         'avg_response_time': avg_response_time
     }
-
 
 def principal():
     cliente = docker.from_env()
@@ -369,7 +428,7 @@ def principal():
                         "tiempo_inicio": tiempo_inicio,
                         "tiempo_estimado": tiempo_estimado,
                         "imagen": nombre_imagen,
-                        "id" : -1
+                        "id": -1
                     })
 
             guardar_comandos_ejecucion(comandos, "")
@@ -398,15 +457,15 @@ def principal():
 
                     algoritmo = input("\nSeleccione un algoritmo: ")
                     if algoritmo == '1':
-                        comandos_planificados = fcfs(ejecucion_seleccionada['comandos'])
+                        comandos_planificados = fcfs(cliente, ejecucion_seleccionada['comandos'])
                     elif algoritmo == '2':
-                        comandos_planificados = round_robin(ejecucion_seleccionada['comandos'])
+                        comandos_planificados = round_robin(cliente, ejecucion_seleccionada['comandos'])
                     elif algoritmo == '3':
-                        comandos_planificados = spn(ejecucion_seleccionada['comandos'])
+                        comandos_planificados = spn(cliente, ejecucion_seleccionada['comandos'])
                     elif algoritmo == '4':
-                        comandos_planificados = srt(ejecucion_seleccionada['comandos'])
+                        comandos_planificados = srt(cliente, ejecucion_seleccionada['comandos'])
                     elif algoritmo == '5':
-                        comandos_planificados = hrrn(ejecucion_seleccionada['comandos'])
+                        comandos_planificados = hrrn(cliente, ejecucion_seleccionada['comandos'])
                     else:
                         print("Selección inválida.")
                         continue
@@ -421,7 +480,6 @@ def principal():
                     actualizar_ejecucion(ejecucion_seleccionada['id_ejec'], algoritmo, tiempos)
 
                     for comando in comandos_planificados:
-                        crear_y_ejecutar_contenedor(cliente, comando['imagen'], comando['comando'], comando['tiempo_inicio'], comando['tiempo_estimado'])
                         actualizar_tiempos_comando(comando)
                     
                     print("\nTiempos calculados:")
