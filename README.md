@@ -24,6 +24,13 @@ Verificamos tener instalados los siguientes requisitos:
 psycopg2: pip install psycopg2
 docker: pip install docker
 ```
+Debemos cambiar el host de la base de datos proporcionando nuestra dirección ip en la linea 12 del código y cambiar la contraseña de la base de datos (si no utilizó la proporcionada en el documento):
+```py
+DB_NAME = "postgres"
+DB_USER = "postgres"
+DB_PASSWORD = "pg123" #Modificar si lo necesita
+DB_HOST = "Tu dirección ip aquí"
+```
 Finalmente ejecutamos el archivo Gestionar_contenedores.py, para acceder al menu de la aplicacion
 ```sh
 python Gestionar_contenedores.py
